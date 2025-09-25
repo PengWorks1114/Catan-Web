@@ -1,18 +1,61 @@
-rules_version='2'
-
+rules_version = '2';
 service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2025, 10, 25);
+  match /databases/{db}/documents {
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function inGame(gameId) {
+      return (
+        isSignedIn() &&
+        exists(/databases/$(db)/documents/games/$(gameId)/players/$(request.auth.uid))
+      );
+    }
+
+    match /games/{gameId} {
+      allow read: if inGame(gameId);
+      allow write: if false;
+
+      match /players/{playerId} {
+        allow read: if inGame(gameId);
+        allow write: if false;
+      }
+
+      match /hands/{playerId} {
+        allow read: if inGame(gameId) && request.auth.uid == playerId;
+        allow write: if false;
+      }
+
+      match /board/{docId} {
+        allow read: if inGame(gameId);
+        allow write: if false;
+      }
+
+      match /config/{docId} {
+        allow read: if inGame(gameId) && !('devDeckOrder' in resource.data);
+        allow write: if false;
+      }
+
+      match /bank/{docId} {
+        allow read: if inGame(gameId);
+        allow write: if false;
+      }
+
+      match /trade/{docId} {
+        allow read: if inGame(gameId);
+        allow write: if false;
+      }
+
+      match /logs/{logId} {
+        allow read: if inGame(gameId);
+        allow create: if inGame(gameId);
+        allow update, delete: if false;
+      }
+
+      match /meta/{docId} {
+        allow read: if inGame(gameId);
+        allow write: if false;
+      }
     }
   }
 }
