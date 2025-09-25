@@ -17,6 +17,7 @@ import type {
   KickGameRequest,
   LeaveGameRequest,
   LogEntry,
+  BoardDoc,
   PlayerPublicDoc,
   ResetGameRequest,
   TimestampLike,
@@ -60,6 +61,135 @@ const MAX_PLAYERS = 4;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 4;
 const CODE_GENERATION_MAX_ATTEMPTS = 8;
+
+type PlayerWithId = {
+  id: string;
+  data: PlayerPublicDoc;
+};
+
+type OkResponse = { ok: true };
+
+const getPlayerDocs = async (
+  tx: FirebaseFirestore.Transaction,
+  gameRef: FirebaseFirestore.DocumentReference,
+): Promise<PlayerWithId[]> => {
+  const playersSnap = await tx.get(gameRef.collection(PLAYERS_SUBCOLLECTION));
+  return playersSnap.docs
+    .map((doc) => ({ id: doc.id, data: doc.data() as PlayerPublicDoc }))
+    .sort((a, b) => a.data.order - b.data.order);
+};
+
+const ensurePlayerInGame = (
+  players: PlayerWithId[],
+  playerId: string,
+): PlayerWithId => {
+  const target = players.find((p) => p.id === playerId);
+  if (!target) {
+    throw new HttpsError("failed-precondition", "Player is not seated in this game.");
+  }
+  return target;
+};
+
+const reindexPlayerOrders = (
+  tx: FirebaseFirestore.Transaction,
+  gameRef: FirebaseFirestore.DocumentReference,
+  players: PlayerWithId[],
+) => {
+  players.forEach((player, index) => {
+    if (player.data.order !== index) {
+      tx.update(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(player.id), { order: index });
+    }
+  });
+};
+
+const buildSeatRemovalGameUpdates = (
+  game: GameDoc,
+  remaining: PlayerWithId[],
+  removedId: string,
+): Record<string, unknown> => {
+  const newTurnOrder = remaining.map((player) => player.id);
+  const updates: Record<string, unknown> = {
+    turnOrder: newTurnOrder,
+  };
+
+  if (game.hostUid === removedId) {
+    updates.hostUid = newTurnOrder[0] ?? "";
+  }
+
+  const currentPlayerStillSeated =
+    game.currentPlayer && newTurnOrder.includes(game.currentPlayer);
+  if (!currentPlayerStillSeated) {
+    updates.currentPlayer = newTurnOrder[0] ?? null;
+    updates.turnPhase = "action";
+  }
+
+  if (game.longestRoadOwner === removedId) {
+    updates.longestRoadOwner = null;
+  }
+
+  if (game.largestArmyOwner === removedId) {
+    updates.largestArmyOwner = null;
+  }
+
+  if (game.status === "placing" && newTurnOrder.length < MAX_PLAYERS) {
+    updates.status = "lobby";
+    updates.round = 0;
+  }
+
+  if (newTurnOrder.length === 0) {
+    updates.status = "lobby";
+    updates.round = 0;
+    updates.currentPlayer = null;
+    updates.hostUid = "";
+  }
+
+  return updates;
+};
+
+const updateBoardAfterRemoval = (
+  board: BoardDoc | null,
+  remainingPlayerIds: string[],
+  removedId: string,
+): BoardDoc => {
+  const base: BoardDoc = board ?? createInitialBoard();
+  return {
+    roads: base.roads.filter((road) => road.owner !== removedId),
+    settlements: base.settlements.filter((node) => node.owner !== removedId),
+    cities: base.cities.filter((node) => node.owner !== removedId),
+    longestRoadCache: createInitialLongestRoadCache(remainingPlayerIds),
+  };
+};
+
+const removePlayerDuringLobby = (
+  tx: FirebaseFirestore.Transaction,
+  gameRef: FirebaseFirestore.DocumentReference,
+  game: GameDoc,
+  players: PlayerWithId[],
+  playerId: string,
+) => {
+  const remaining = players.filter((player) => player.id !== playerId);
+  reindexPlayerOrders(tx, gameRef, remaining);
+
+  tx.delete(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(playerId));
+  tx.delete(gameRef.collection(HANDS_SUBCOLLECTION).doc(playerId));
+
+  const gameUpdates = buildSeatRemovalGameUpdates(game, remaining, playerId);
+  tx.update(gameRef, gameUpdates);
+
+  tx.set(
+    gameRef.collection(BOARD_SUBCOLLECTION).doc(BOARD_DOC_ID),
+    { longestRoadCache: createInitialLongestRoadCache(remaining.map((p) => p.id)) },
+    { merge: true },
+  );
+
+  tx.set(
+    gameRef.collection(CONFIG_SUBCOLLECTION).doc(CONFIG_DOC_ID),
+    { initialPlacementOrder: [] },
+    { merge: true },
+  );
+
+  return remaining;
+};
 
 const assertAuthenticated = <T>(request: CallableRequest<T>): string => {
   const uid = request.auth?.uid;
@@ -284,29 +414,255 @@ export const gamesJoin = onCall<JoinGameRequest>(async (request) => {
 });
 
 export const gameIntent = onCall<IntentRequest>(async (request) => {
-  assertAuthenticated(request);
+  const uid = assertAuthenticated(request);
+  const gameId = (request.data?.gameId ?? "").trim();
+  const intent = request.data?.intent;
+
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "gameId is required.");
+  }
+
+  if (!intent) {
+    throw new HttpsError("invalid-argument", "intent payload is required.");
+  }
+
+  const gameRef = db.collection(GAMES_COLLECTION).doc(gameId);
+
+  switch (intent.type) {
+    case "RESIGN": {
+      let resignedPlayerName: string | null = null;
+      await db.runTransaction(async (tx) => {
+        const gameSnap = await tx.get(gameRef);
+        if (!gameSnap.exists) {
+          throw new HttpsError("not-found", "Game not found.");
+        }
+        const game = gameSnap.data() as GameDoc;
+
+        const players = await getPlayerDocs(tx, gameRef);
+        const player = ensurePlayerInGame(players, uid);
+        resignedPlayerName = player.data.name;
+
+        if (game.status === "lobby") {
+          removePlayerDuringLobby(tx, gameRef, game, players, uid);
+          return;
+        }
+
+        const remaining = players.filter((player) => player.id !== uid);
+        reindexPlayerOrders(tx, gameRef, remaining);
+
+        tx.delete(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(uid));
+        tx.delete(gameRef.collection(HANDS_SUBCOLLECTION).doc(uid));
+
+        const boardRef = gameRef.collection(BOARD_SUBCOLLECTION).doc(BOARD_DOC_ID);
+        const boardSnap = await tx.get(boardRef);
+        const board = boardSnap.exists ? (boardSnap.data() as BoardDoc) : null;
+        const updatedBoard = updateBoardAfterRemoval(
+          board,
+          remaining.map((player) => player.id),
+          uid,
+        );
+        tx.set(boardRef, updatedBoard);
+
+        const gameUpdates = buildSeatRemovalGameUpdates(game, remaining, uid);
+        if (remaining.length === 0) {
+          gameUpdates.status = "ended";
+          gameUpdates.round = game.round;
+          gameUpdates.currentPlayer = null;
+          gameUpdates.winner = null;
+        } else if (remaining.length === 1) {
+          const sole = remaining[0];
+          gameUpdates.status = "ended";
+          gameUpdates.round = game.round;
+          gameUpdates.currentPlayer = sole.id;
+          gameUpdates.turnPhase = "action";
+          gameUpdates.winner = {
+            playerId: sole.id,
+            points: sole.data.pointsPublic,
+          };
+        }
+
+        tx.update(gameRef, gameUpdates);
+        tx.set(
+          gameRef.collection(TRADE_SUBCOLLECTION).doc(TRADE_DOC_ID),
+          createInitialTrade(),
+        );
+      });
+
+      await logGameEvent(gameRef, {
+        actor: uid,
+        action: "leave",
+        payload: { resigned: true, name: resignedPlayerName },
+      });
+
+      return { ok: true } satisfies OkResponse;
+    }
+    default:
+      throw new HttpsError("unimplemented", `Intent ${intent.type} is not implemented yet.`);
+  }
+});
+
+export const gameReset = onCall<ResetGameRequest>(async (request) => {
+  const uid = assertAuthenticated(request);
   const gameId = (request.data?.gameId ?? "").trim();
   if (!gameId) {
     throw new HttpsError("invalid-argument", "gameId is required.");
   }
-  logger.warn("Intent handler not yet implemented", {
-    gameId,
-    intent: request.data?.intent?.type ?? "unknown",
+
+  const gameRef = db.collection(GAMES_COLLECTION).doc(gameId);
+  const { config, robberHex } = generateInitialConfig();
+
+  await db.runTransaction(async (tx) => {
+    const gameSnap = await tx.get(gameRef);
+    if (!gameSnap.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnap.data() as GameDoc;
+    if (game.hostUid !== uid) {
+      throw new HttpsError("permission-denied", "Only the host can reset the game.");
+    }
+
+    const players = await getPlayerDocs(tx, gameRef);
+    const turnOrder = players.map((player) => player.id);
+
+    players.forEach((player, index) => {
+      tx.update(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(player.id), {
+        order: index,
+        pointsPublic: 0,
+        hasLargestArmy: false,
+        hasLongestRoad: false,
+        connected: true,
+      });
+    });
+
+    const newBoard = createInitialBoard();
+    newBoard.longestRoadCache = createInitialLongestRoadCache(turnOrder);
+
+    const nextStatus = turnOrder.length === MAX_PLAYERS ? "placing" : "lobby";
+    const nextCurrentPlayer = turnOrder[0] ?? null;
+
+    tx.update(gameRef, {
+      status: nextStatus,
+      currentPlayer: nextCurrentPlayer,
+      round: 0,
+      turnOrder,
+      turnPhase: "action",
+      robber: robberHex,
+      largestArmyOwner: null,
+      longestRoadOwner: null,
+      winner: null,
+    });
+
+    turnOrder.forEach((playerId) => {
+      tx.set(
+        gameRef.collection(HANDS_SUBCOLLECTION).doc(playerId),
+        createEmptyHand(),
+      );
+    });
+
+    tx.set(gameRef.collection(BOARD_SUBCOLLECTION).doc(BOARD_DOC_ID), newBoard);
+    tx.set(
+      gameRef.collection(CONFIG_SUBCOLLECTION).doc(CONFIG_DOC_ID),
+      {
+        ...config,
+        initialPlacementOrder:
+          nextStatus === "placing" ? createInitialPlacementOrder(turnOrder) : [],
+      },
+    );
+    tx.set(
+      gameRef.collection(BANK_SUBCOLLECTION).doc(BANK_DOC_ID),
+      createInitialBank(config.devDeckOrder.length),
+    );
+    tx.set(gameRef.collection(TRADE_SUBCOLLECTION).doc(TRADE_DOC_ID), createInitialTrade());
   });
-  throw new HttpsError("unimplemented", "Intent handling is not implemented yet.");
+
+  await logGameEvent(gameRef, {
+    actor: uid,
+    action: "reset",
+    payload: null,
+  });
+
+  return { ok: true } satisfies OkResponse;
 });
 
-export const gameReset = onCall<ResetGameRequest>((request) => {
-  assertAuthenticated(request);
-  throw new HttpsError("unimplemented", "Reset functionality is not implemented yet.");
+export const gameLeave = onCall<LeaveGameRequest>(async (request) => {
+  const uid = assertAuthenticated(request);
+  const gameId = (request.data?.gameId ?? "").trim();
+  if (!gameId) {
+    throw new HttpsError("invalid-argument", "gameId is required.");
+  }
+
+  const gameRef = db.collection(GAMES_COLLECTION).doc(gameId);
+
+  await db.runTransaction(async (tx) => {
+    const gameSnap = await tx.get(gameRef);
+    if (!gameSnap.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnap.data() as GameDoc;
+    if (game.status !== "lobby") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Cannot leave after the game has started. Use resign instead.",
+      );
+    }
+
+    const players = await getPlayerDocs(tx, gameRef);
+    ensurePlayerInGame(players, uid);
+
+    removePlayerDuringLobby(tx, gameRef, game, players, uid);
+  });
+
+  await logGameEvent(gameRef, {
+    actor: uid,
+    action: "leave",
+    payload: { voluntary: true },
+  });
+
+  return { ok: true } satisfies OkResponse;
 });
 
-export const gameLeave = onCall<LeaveGameRequest>((request) => {
-  assertAuthenticated(request);
-  throw new HttpsError("unimplemented", "Leave functionality is not implemented yet.");
-});
+export const gameKick = onCall<KickGameRequest>(async (request) => {
+  const uid = assertAuthenticated(request);
+  const gameId = (request.data?.gameId ?? "").trim();
+  const targetId = (request.data?.playerId ?? "").trim();
+  if (!gameId || !targetId) {
+    throw new HttpsError("invalid-argument", "gameId and playerId are required.");
+  }
 
-export const gameKick = onCall<KickGameRequest>((request) => {
-  assertAuthenticated(request);
-  throw new HttpsError("unimplemented", "Kick functionality is not implemented yet.");
+  const gameRef = db.collection(GAMES_COLLECTION).doc(gameId);
+
+  await db.runTransaction(async (tx) => {
+    const gameSnap = await tx.get(gameRef);
+    if (!gameSnap.exists) {
+      throw new HttpsError("not-found", "Game not found.");
+    }
+
+    const game = gameSnap.data() as GameDoc;
+    if (game.hostUid !== uid) {
+      throw new HttpsError("permission-denied", "Only the host can kick players.");
+    }
+
+    if (game.status !== "lobby") {
+      throw new HttpsError("failed-precondition", "Players can only be kicked in the lobby.");
+    }
+
+    if (uid === targetId) {
+      throw new HttpsError("failed-precondition", "Host cannot kick themselves.");
+    }
+
+    const players = await getPlayerDocs(tx, gameRef);
+    ensurePlayerInGame(players, targetId);
+
+    removePlayerDuringLobby(tx, gameRef, game, players, targetId);
+  });
+
+  await logGameEvent(gameRef, {
+    actor: uid,
+    action: "leave",
+    payload: { kicked: true, targetId },
+  });
+
+  return { ok: true } satisfies OkResponse;
 });

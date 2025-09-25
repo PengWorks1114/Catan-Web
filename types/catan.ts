@@ -152,7 +152,8 @@ export type LogAction =
   | "endTurn"
   | "award"
   | "join"
-  | "leave";
+  | "leave"
+  | "reset";
 
 export interface LogEntry {
   ts: TimestampLike;
