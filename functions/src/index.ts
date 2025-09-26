@@ -1,11 +1,6 @@
 import { randomBytes } from "crypto";
 import * as admin from "firebase-admin";
-import {
-  HttpsError,
-  CallableRequest,
-  onCall,
-} from "firebase-functions/v2/https";
-import { setGlobalOptions } from "firebase-functions/v2/options";
+import * as functions from "firebase-functions/v1";
 import * as logger from "firebase-functions/logger";
 import type {
   CreateGameRequest,
@@ -39,7 +34,8 @@ import {
   nextAvailableColor,
 } from "./setup";
 
-setGlobalOptions({ region: "asia-east1", maxInstances: 10 });
+const { HttpsError } = functions.https;
+const callableBuilder = functions.region("asia-east1").runWith({ maxInstances: 10 });
 
 if (admin.apps.length === 0) {
   admin.initializeApp();
@@ -197,8 +193,8 @@ const removePlayerDuringLobby = (
   return remaining;
 };
 
-const assertAuthenticated = <T>(request: CallableRequest<T>): string => {
-  const uid = request.auth?.uid;
+const assertAuthenticated = (context: functions.https.CallableContext): string => {
+  const uid = context.auth?.uid;
   if (!uid) {
     throw new HttpsError("unauthenticated", "Authentication required.");
   }
@@ -267,9 +263,12 @@ const getGameByCode = async (code: string) => {
   return snapshot.docs[0]?.ref ?? null;
 };
 
-export const gamesCreate = onCall<CreateGameRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const displayName = sanitizeName(request.data?.name);
+export const gamesCreate = callableBuilder.https.onCall(async (
+  data: CreateGameRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const displayName = sanitizeName(data?.name);
   const code = await createUniqueRoomCode();
   const { config, robberHex } = generateInitialConfig();
   const createdAt = timestampNow();
@@ -330,10 +329,13 @@ export const gamesCreate = onCall<CreateGameRequest>(async (request) => {
   return { gameId: gameRef.id, code } satisfies CreateGameResponse;
 });
 
-export const gamesJoin = onCall<JoinGameRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const code = normalizeCode(request.data?.code);
-  const displayName = sanitizeName(request.data?.name);
+export const gamesJoin = callableBuilder.https.onCall(async (
+  data: JoinGameRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const code = normalizeCode(data?.code);
+  const displayName = sanitizeName(data?.name);
 
   const gameRef = await getGameByCode(code);
   if (!gameRef) {
@@ -422,10 +424,13 @@ export const gamesJoin = onCall<JoinGameRequest>(async (request) => {
   return { gameId: gameRef.id } satisfies JoinGameResponse;
 });
 
-export const gameIntent = onCall<IntentRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const gameId = (request.data?.gameId ?? "").trim();
-  const intent = request.data?.intent;
+export const gameIntent = callableBuilder.https.onCall(async (
+  data: IntentRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const gameId = (data?.gameId ?? "").trim();
+  const intent = data?.intent;
 
   if (!gameId) {
     throw new HttpsError("invalid-argument", "gameId is required.");
@@ -510,9 +515,12 @@ export const gameIntent = onCall<IntentRequest>(async (request) => {
   }
 });
 
-export const gameReset = onCall<ResetGameRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const gameId = (request.data?.gameId ?? "").trim();
+export const gameReset = callableBuilder.https.onCall(async (
+  data: ResetGameRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const gameId = (data?.gameId ?? "").trim();
   if (!gameId) {
     throw new HttpsError("invalid-argument", "gameId is required.");
   }
@@ -594,9 +602,12 @@ export const gameReset = onCall<ResetGameRequest>(async (request) => {
   return { ok: true } satisfies OkResponse;
 });
 
-export const gameLeave = onCall<LeaveGameRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const gameId = (request.data?.gameId ?? "").trim();
+export const gameLeave = callableBuilder.https.onCall(async (
+  data: LeaveGameRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const gameId = (data?.gameId ?? "").trim();
   if (!gameId) {
     throw new HttpsError("invalid-argument", "gameId is required.");
   }
@@ -632,10 +643,13 @@ export const gameLeave = onCall<LeaveGameRequest>(async (request) => {
   return { ok: true } satisfies OkResponse;
 });
 
-export const gameKick = onCall<KickGameRequest>(async (request) => {
-  const uid = assertAuthenticated(request);
-  const gameId = (request.data?.gameId ?? "").trim();
-  const targetId = (request.data?.playerId ?? "").trim();
+export const gameKick = callableBuilder.https.onCall(async (
+  data: KickGameRequest | undefined,
+  context: functions.https.CallableContext,
+) => {
+  const uid = assertAuthenticated(context);
+  const gameId = (data?.gameId ?? "").trim();
+  const targetId = (data?.playerId ?? "").trim();
   if (!gameId || !targetId) {
     throw new HttpsError("invalid-argument", "gameId and playerId are required.");
   }
