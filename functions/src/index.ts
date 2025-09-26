@@ -21,7 +21,7 @@ import type {
   PlayerPublicDoc,
   ResetGameRequest,
   TimestampLike,
-} from "./types";
+} from "./contracts";
 import {
   BANK_DOC_ID,
   BOARD_DOC_ID,

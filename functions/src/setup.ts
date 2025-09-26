@@ -11,8 +11,8 @@ import type {
   ResMap,
   Resource,
   TradeDoc,
-} from "./types";
-import { DEV_CARD_KINDS, PLAYER_COLORS, RESOURCE_TYPES } from "./types";
+} from "./contracts";
+import { DEV_CARD_KINDS, PLAYER_COLORS, RESOURCE_TYPES } from "./contracts";
 
 type Rng = () => number;
 
