@@ -37,6 +37,8 @@ export const PLAYER_COLORS: readonly PlayerColor[] = [
   "orange",
 ] as const;
 
+export const SCHEMA_VERSION = 1 as const;
+
 export interface TimestampLike {
   seconds: number;
   nanoseconds: number;
@@ -55,7 +57,7 @@ export interface GameDoc {
   largestArmyOwner: string | null;
   longestRoadOwner: string | null;
   winner: { playerId: string; points: number } | null;
-  schemaVersion: 1;
+  schemaVersion: typeof SCHEMA_VERSION;
 }
 
 export interface PlayerPublicDoc {

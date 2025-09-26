@@ -371,7 +371,10 @@ export const gamesJoin = onCall<JoinGameRequest>(async (request) => {
     }
 
     const order = players.length;
-    const updatedTurnOrder = [...game.turnOrder.filter((id) => players.some((p) => p.uid === id)), uid];
+    const updatedTurnOrder = [
+      ...game.turnOrder.filter((id: string) => players.some((p) => p.uid === id)),
+      uid,
+    ];
 
     const playerDoc: PlayerPublicDoc = {
       uid,
