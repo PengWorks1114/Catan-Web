@@ -95,7 +95,7 @@ const reindexPlayerOrders = (
   gameRef: FirebaseFirestore.DocumentReference,
   players: PlayerWithId[],
 ) => {
-  players.forEach((player, index) => {
+  players.forEach((player: PlayerWithId, index: number) => {
     if (player.data.order !== index) {
       tx.update(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(player.id), { order: index });
     }
@@ -153,9 +153,15 @@ const updateBoardAfterRemoval = (
 ): BoardDoc => {
   const base: BoardDoc = board ?? createInitialBoard();
   return {
-    roads: base.roads.filter((road) => road.owner !== removedId),
-    settlements: base.settlements.filter((node) => node.owner !== removedId),
-    cities: base.cities.filter((node) => node.owner !== removedId),
+    roads: base.roads.filter(
+      (road: BoardDoc["roads"][number]) => road.owner !== removedId,
+    ),
+    settlements: base.settlements.filter(
+      (node: BoardDoc["settlements"][number]) => node.owner !== removedId,
+    ),
+    cities: base.cities.filter(
+      (node: BoardDoc["cities"][number]) => node.owner !== removedId,
+    ),
     longestRoadCache: createInitialLongestRoadCache(remainingPlayerIds),
   };
 };
@@ -167,7 +173,7 @@ const removePlayerDuringLobby = (
   players: PlayerWithId[],
   playerId: string,
 ) => {
-  const remaining = players.filter((player) => player.id !== playerId);
+  const remaining = players.filter((player: PlayerWithId) => player.id !== playerId);
   reindexPlayerOrders(tx, gameRef, remaining);
 
   tx.delete(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(playerId));
@@ -523,9 +529,9 @@ export const gameReset = onCall<ResetGameRequest>(async (request) => {
     }
 
     const players = await getPlayerDocs(tx, gameRef);
-    const turnOrder = players.map((player) => player.id);
+    const turnOrder = players.map((player: PlayerWithId) => player.id);
 
-    players.forEach((player, index) => {
+    players.forEach((player: PlayerWithId, index: number) => {
       tx.update(gameRef.collection(PLAYERS_SUBCOLLECTION).doc(player.id), {
         order: index,
         pointsPublic: 0,
@@ -553,7 +559,7 @@ export const gameReset = onCall<ResetGameRequest>(async (request) => {
       winner: null,
     });
 
-    turnOrder.forEach((playerId) => {
+    turnOrder.forEach((playerId: string) => {
       tx.set(
         gameRef.collection(HANDS_SUBCOLLECTION).doc(playerId),
         createEmptyHand(),

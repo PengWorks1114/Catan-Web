@@ -6,6 +6,7 @@ import type {
   DevKind,
   HandDoc,
   MapConfig,
+  PortConfig,
   MetaDoc,
   ResMap,
   Resource,
@@ -15,7 +16,7 @@ import { DEV_CARD_KINDS, PLAYER_COLORS, RESOURCE_TYPES } from "./types";
 
 type Rng = () => number;
 
-const HEX_IDS = Array.from({ length: 19 }, (_, index) =>
+const HEX_IDS = Array.from({ length: 19 }, (_: unknown, index: number) =>
   `hex_${index.toString().padStart(2, "0")}`,
 );
 
@@ -122,19 +123,24 @@ export const createSeed = (): string => randomBytes(8).toString("hex");
 const generateMap = (seed: string): { map: MapConfig; robberHex: string } => {
   const rng = makeMulberry32(hashSeed(seed));
   const tilesShuffled = shuffle(TILE_POOL, rng);
-  const tiles: MapConfig["tiles"] = tilesShuffled.map((type, index) => ({
+  const tiles: MapConfig["tiles"] = tilesShuffled.map((type: Resource | "desert", index: number) => ({
     hexId: HEX_IDS[index],
     type,
   }));
 
-  const robberHex = tiles.find((tile) => tile.type === "desert")?.hexId ?? HEX_IDS[0];
-  const numberTargets = tiles.filter((tile) => tile.type !== "desert");
-  const numbers: MapConfig["numbers"] = shuffle(NUMBER_CHITS, rng).map((chit, index) => ({
+  const robberHex =
+    tiles.find((tile: MapConfig["tiles"][number]) => tile.type === "desert")?.hexId ??
+    HEX_IDS[0];
+  const numberTargets = tiles.filter((tile: MapConfig["tiles"][number]) => tile.type !== "desert");
+  const numbers: MapConfig["numbers"] = shuffle(NUMBER_CHITS, rng).map((chit: number, index: number) => ({
     hexId: numberTargets[index]?.hexId ?? HEX_IDS[index],
     chit,
   }));
 
-  const ports: MapConfig["ports"] = shuffle(PORT_TYPE_POOL, rng).map((type, index) => ({
+  const ports: MapConfig["ports"] = shuffle(PORT_TYPE_POOL, rng).map((
+    type: PortConfig["type"],
+    index: number,
+  ) => ({
     edgeId: PORT_EDGE_IDS[index] ?? PORT_EDGE_IDS[0],
     type,
   }));
@@ -164,8 +170,12 @@ const emptyResMap = (): ResMap => {
 
 export const createEmptyHand = (): HandDoc => ({
   resources: emptyResMap(),
-  devCards: Object.fromEntries(DEV_CARD_KINDS.map((kind) => [kind, 0])) as Record<DevKind, number>,
-  devNewlyBought: Object.fromEntries(DEV_CARD_KINDS.map((kind) => [kind, 0])) as Record<DevKind, number>,
+  devCards: Object.fromEntries(
+    DEV_CARD_KINDS.map((kind: DevKind) => [kind, 0 as number]),
+  ) as Record<DevKind, number>,
+  devNewlyBought: Object.fromEntries(
+    DEV_CARD_KINDS.map((kind: DevKind) => [kind, 0 as number]),
+  ) as Record<DevKind, number>,
   armyCount: 0,
 });
 
@@ -193,14 +203,16 @@ export const createInitialMeta = (): MetaDoc => ({
   locked: false,
 });
 
-export const createInitialPlacementOrder = (turnOrder: string[]): string[] => {
+export const createInitialPlacementOrder = (turnOrder: readonly string[]): string[] => {
   if (turnOrder.length === 0) {
     return [];
   }
   return [...turnOrder, ...turnOrder.slice().reverse()];
 };
 
-export const createInitialLongestRoadCache = (playerIds: string[]): Record<string, number> => {
+export const createInitialLongestRoadCache = (
+  playerIds: readonly string[],
+): Record<string, number> => {
   const cache: Record<string, number> = {};
   for (const id of playerIds) {
     cache[id] = 0;

@@ -222,3 +222,5 @@ export interface KickGameRequest {
   gameId: string;
   playerId: string;
 }
+
+export {};
