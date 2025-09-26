@@ -18,7 +18,7 @@ const app = initializeApp(firebaseConfig);
 // Services
 const auth = getAuth(app);
 const db = getFirestore(app);
-const functions = getFunctions(app);
+const functions = getFunctions(app, "asia-east1");
 
 // 在本地環境連線到 Emulator
 if (process.env.NODE_ENV === "development") {
